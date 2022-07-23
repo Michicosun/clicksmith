@@ -3,6 +3,7 @@ project(SQLsmith LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(FeatureTests)
 
@@ -13,7 +14,7 @@ Option(USE_UPSTREAM_LIBPQXX "Fetch and use libpqxx from Github.")
 # define our executable early, so we can set the properties, based on our dependencies
 add_executable(sqlsmith)
 target_sources(sqlsmith PRIVATE
-        relmodel.cc schema.cc random.cc prod.cc expr.cc grammar.cc log.cc dump.cc impedance.cc sqlsmith.cc postgres.cc)
+        relmodel.cc schema.cc random.cc prod.cc expr.cc grammar.cc log.cc dump.cc impedance.cc sqlsmith.cc postgres.cc clickhouse.cc)
 
 target_link_libraries(sqlsmith PostgreSQL::PostgreSQL)
 
@@ -73,6 +74,11 @@ if (MonetDB_FOUND)
     target_link_libraries(sqlsmith MonetDB::mapi)
 endif ()
 
+# clickhouse
+add_subdirectory(clickhouse-cpp)
+target_link_libraries(sqlsmith clickhouse-cpp-lib)
+target_include_directories(sqlsmith PUBLIC clickhouse-cpp)
+target_include_directories(sqlsmith PUBLIC clickhouse-cpp/contrib)
 
 ## target configuration
 string(TOLOWER ${PROJECT_NAME} PACKAGE)

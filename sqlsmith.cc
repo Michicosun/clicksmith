@@ -35,6 +35,7 @@ using boost::regex_match;
 #endif
 
 #include "postgres.hh"
+#include "clickhouse.hh"
 
 using namespace std;
 
@@ -62,7 +63,7 @@ int main(int argc, char *argv[])
   cerr << PACKAGE_NAME " " GITREV << endl;
 
   map<string,string> options;
-  regex optregex("--(help|log-to|verbose|target|sqlite|monetdb|version|dump-all-graphs|dump-all-queries|seed|dry-run|max-queries|rng-state|exclude-catalog)(?:=((?:.|\n)*))?");
+  regex optregex("--(help|log-to|verbose|target|sqlite|monetdb|clickhouse|version|dump-all-graphs|dump-all-queries|seed|dry-run|max-queries|rng-state|exclude-catalog)(?:=((?:.|\n)*))?");
   
   for(char **opt = argv+1 ;opt < argv+argc; opt++) {
     smatch match;
@@ -110,6 +111,9 @@ int main(int argc, char *argv[])
 	cerr << "Sorry, " PACKAGE_NAME " was compiled without SQLite support." << endl;
 	return 1;
 #endif
+      }
+      else if (options.count("clickhouse")) {
+        schema = make_shared<schema_clickhouse>(options["clickhouse"]);
       }
       else if(options.count("monetdb")) {
 #ifdef HAVE_MONETDB
@@ -178,6 +182,9 @@ int main(int argc, char *argv[])
 	cerr << "Sorry, " PACKAGE_NAME " was compiled without SQLite support." << endl;
 	return 1;
 #endif
+      }
+      else if (options.count("clickhouse")) {
+        dut = make_shared<dut_clickhouse>(options["clickhouse"]);
       }
       else if(options.count("monetdb")) {
 #ifdef HAVE_MONETDB	   
