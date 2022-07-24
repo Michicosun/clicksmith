@@ -1,3 +1,16 @@
+* Fork overview
+This fork extends sqlsmith to be able to test Clickhouse
+
+: # testing Clickhouse
+: sqlsmith --verbose --clickhouse="host=/tmp port=9000 user=default pass=`` dbname=db"
+
+By default: 
+- user=default
+- pass is empty string
+- dbname=db
+
+-----------------
+
 [[logo.png]]
 * SQLsmith
 
