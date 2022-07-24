@@ -219,9 +219,12 @@ int main(int argc, char *argv[])
 	    ostringstream s;
 	    gen->out(s);
 
+      std::cout << s.str() << "\n";
+
 	    /* Try to execute it */
 	    try {
 	      dut->test(s.str());
+        return 0;
 	      for (auto l : loggers)
 		l->executed(*gen);
 	    } catch (const dut::failure &e) {

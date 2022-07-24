@@ -151,17 +151,19 @@ void expr_join_cond::out(std::ostream &out) {
 }
 
 joined_table::joined_table(prod *p) : table_ref(p) {
-  lhs = table_ref::factory(this);
-  rhs = table_ref::factory(this);
+  lhs = make_shared<table_subquery>(table_ref::factory(this).get());
+  rhs = make_shared<table_subquery>(table_ref::factory(this).get());
 
   condition = join_cond::factory(this, *lhs, *rhs);
 
-  if (d6()<4) {
+  if (d6() < 4) {
     type = "inner";
-  } else if (d6()<4) {
+  } else if (d6() < 4) {
     type = "left";
-  } else {
+  } else if (d6() < 4){
     type = "right";
+  } else {
+    type = "full";
   }
 
   for (auto ref: lhs->refs)
@@ -179,8 +181,8 @@ void joined_table::out(std::ostream &out) {
 }
 
 void table_subquery::out(std::ostream &out) {
-  if (is_lateral)
-    out << "lateral ";
+  // if (is_lateral)
+  //   out << "lateral ";
   out << "(" << *query << ") as " << refs[0]->ident();
 }
 
@@ -202,14 +204,14 @@ from_clause::from_clause(prod *p) : prod(p) {
   for (auto r : reflist.back()->refs)
     scope->refs.push_back(&*r);
 
-  while (d6() > 5) {
-    // add a lateral subquery
-    if (!impedance::matched(typeid(lateral_subquery)))
-      break;
-    reflist.push_back(make_shared<lateral_subquery>(this));
-    for (auto r : reflist.back()->refs)
-      scope->refs.push_back(&*r);
-  }
+  // while (d6() > 5) {
+  //   // add a lateral subquery
+  //   if (!impedance::matched(typeid(lateral_subquery)))
+  //     break;
+  //   reflist.push_back(make_shared<lateral_subquery>(this));
+  //   for (auto r : reflist.back()->refs)
+  //     scope->refs.push_back(&*r);
+  // }
 }
 
 select_list::select_list(prod *p) : prod(p)
@@ -317,8 +319,8 @@ query_spec::query_spec(prod *p, struct scope *s, bool lateral) :
   scope = &myscope;
   scope->tables = s->tables;
 
-  if (lateral)
-    scope->refs = s->refs;
+  // if (lateral)
+  //   scope->refs = s->refs;
   
   from_clause = make_shared<struct from_clause>(this);
   select_list = make_shared<struct select_list>(this);

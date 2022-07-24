@@ -46,7 +46,7 @@ void clickhouse_connection::query(const std::string& query) {
     try {
         client.Execute(query);
     } catch(const clickhouse::ServerError& err) {
-        // std::cerr << err.what() << "\n";
+        std::cout << err.what() << std::endl;
     } catch(...) {}
 }
 
