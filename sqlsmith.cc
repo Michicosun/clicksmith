@@ -224,7 +224,6 @@ int main(int argc, char *argv[])
 	    /* Try to execute it */
 	    try {
 	      dut->test(s.str());
-        return 0;
 	      for (auto l : loggers)
 		l->executed(*gen);
 	    } catch (const dut::failure &e) {

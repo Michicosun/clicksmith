@@ -1,23 +1,30 @@
 #include "clickhouse.hh"
 #include "clickhouse/client.h"
+#include "clickhouse/columns/string.h"
 #include "clickhouse/exceptions.h"
+#include "dut.hh"
+#include "relmodel.hh"
 
+#include <cstddef>
 #include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 #include <cassert>
 #include <iostream>
 #include <string>
+#include <string_view>
 
 #include <regex>
+#include <vector>
 
 using namespace std;
 
 info_parser::info_parser(const std::string& info) {
-    options["username"] = "default";
-    options["password"] = "";
+    options["user"] = "default";
+    options["pass"] = "";
+    options["db"] = "db";
 
-    std::regex optregex("(host|port|username|password)(?:=((?:.|\n)*))?");
+    std::regex optregex("(host|port|user|pass|db)(?:=((?:.|\n)*))?");
     
     std::stringstream ss(info);
     std::string token;
@@ -39,8 +46,8 @@ clickhouse_connection::clickhouse_connection(const std::string& info)
     , client{clickhouse::ClientOptions()
         .SetHost(parser.options["host"])
         .SetPort(stoi(parser.options["port"]))
-        .SetUser(parser.options["username"])
-        .SetPassword(parser.options["password"])} {}
+        .SetUser(parser.options["user"])
+        .SetPassword(parser.options["pass"])} {}
 
 void clickhouse_connection::query(const std::string& query) {
     try {
@@ -51,141 +58,174 @@ void clickhouse_connection::query(const std::string& query) {
 }
 
 void clickhouse_connection::checkAliveness() {
-    client.Ping();
+    try {
+        client.Ping();
+    } catch(...) {
+        throw dut::failure("ping failed");
+    }
 }
 
 void schema_clickhouse::initTypes() {
-    cerr << "init booltype, inttype, internaltype, arraytype here" << endl;
-	booltype = sqltype::get("UInt8");
-	inttype = sqltype::get("UInt64");
-	internaltype = sqltype::get("internal");
-	arraytype = sqltype::get("Array");
+    std::cerr << "init booltype, inttype, internaltype, arraytype here" << std::endl;
+    
+    booltype = sqltype::get("UInt8");
+    inttype = sqltype::get("UInt64");
+    internaltype = sqltype::get("internal");
+    arraytype = sqltype::get("Array");
+
+    std::cerr << " done." << std::endl;
+} 
+
+std::vector<std::string> schema_clickhouse::getTableList() {
+    std::string query = "show tables in " + parser.options["db"];
+
+    std::vector<std::string> ans; 
+    client.Select(query, [&ans](const clickhouse::Block& block) {
+        for (size_t i = 0; i < block.GetRowCount(); ++i) {
+            std::string name = std::string(block[0]->As<clickhouse::ColumnString>()->At(i));
+            ans.push_back(name);
+        }
+    });
+
+    return ans;
+}
+
+bool startsWith(const std::string& a, const std::string& b) {
+    size_t i = 0;
+    for (; i < a.size() && i < b.size(); ++i) {
+        if (a[i] != b[i]) return false;
+    }
+    return i == b.size();
+}
+
+void schema_clickhouse::describeTable(const std::string& name) {
+    std::string query = "describe " + parser.options["db"] + "." + name;
+
+    tables.push_back(table(name, parser.options["db"], true, false));
+
+    client.Select(query, [&table = tables.back()](const clickhouse::Block& block) {
+        for (size_t i = 0; i < block.GetRowCount(); ++i) {
+            std::string name = std::string(block[0]->As<clickhouse::ColumnString>()->At(i));
+            std::string type = std::string(block[1]->As<clickhouse::ColumnString>()->At(i));
+
+            if (startsWith(type, "Array")) {
+                table.columns().push_back(column(name, sqltype::get("Array")));
+            }
+        }
+    });
 }
 
 void schema_clickhouse::initTables() {
-    cerr << "Loading tables from database:" << endl;
-	// string qry = "select t.name, s.name, t.system, t.type from sys.tables t,  sys.schemas s where t.schema_id=s.id ";
-	// MapiHdl hdl = mapi_query(dbh,qry.c_str());
-	// while (mapi_fetch_row(hdl)) {
-	// 	tables.push_back(table(mapi_fetch_field(hdl,0),mapi_fetch_field(hdl,1),strcmp(mapi_fetch_field(hdl,2),"false")==0 ? true : false , atoi(mapi_fetch_field(hdl,3))==0 ? false : true));
-	// }
-	// mapi_close_handle(hdl);
-    tables.push_back(table("test", "db", true, false));
-	cerr << " done." << endl;
+    std::cerr << "Loading tables from database:" << std::endl;
+    
+    auto tableNames = getTableList();
 
-	cerr << "Loading columns and constraints...";
-	// for (auto t = tables.begin(); t!=tables.end(); t++) {
-	// 	string q("select col.name,"
-	// 		" col.type "
-	// 		" from sys.columns col, sys.tables tab"
-	// 		" where tab.name= '");
-	// 	q += t->name;
-	// 	q += "' and tab.id = col.table_id";
+    for (const auto& name : tableNames) {
+        describeTable(name);
+    }
 
-	// 	hdl = mapi_query(dbh,q.c_str());
-	// 	while (mapi_fetch_row(hdl)) {
-	// 		column c(mapi_fetch_field(hdl,0), sqltype::get(mapi_fetch_field(hdl,1)));
-	// 		t->columns().push_back(c);
-	// 	}
-	// 	mapi_close_handle(hdl);
-	// }
-	// // TODO: confirm with Martin or Stefan about column
-	// // constraints in MonetDB
-    tables.front().columns().push_back(column("first", sqltype::get("UInt64")));
-    tables.front().columns().push_back(column("second", sqltype::get("UInt64")));
-	cerr << " done." << endl;
+    std::cerr << " done." << std::endl;
+}
+
+void schema_clickhouse::addOperators(
+        const std::vector<std::string>& names, 
+        const std::string& lType, 
+        const std::string& rType,
+        const std::string& resultType)
+{
+    for (const auto& name : names) {
+        op o(name, sqltype::get(lType), sqltype::get(rType), sqltype::get(resultType));
+        register_operator(o);
+    }
 }
 
 void schema_clickhouse::initOperators() {
-    cerr << "Loading operators...";
-	// string opq("select f.func, a.type, b.type, c.type"
-	// 	" from sys.functions f, sys.args a, sys.args b, sys.args c"
-    //             "  where f.id=a.func_id and f.id=b.func_id and f.id=c.func_id and a.name='arg_1' and b.name='arg_2' and c.number=0");
-	// hdl = mapi_query(dbh,opq.c_str());
-	// while (mapi_fetch_row(hdl)) {
-	// 	op o(mapi_fetch_field(hdl,0),sqltype::get(mapi_fetch_field(hdl,1)),sqltype::get(mapi_fetch_field(hdl,2)),sqltype::get(mapi_fetch_field(hdl,3)));
-	// 	register_operator(o);
-	// }
-	// mapi_close_handle(hdl);
-    op o("+", sqltype::get("UInt64"), sqltype::get("UInt64"), sqltype::get("UInt64"));
-    register_operator(o);
-    
-    o = op("-", sqltype::get("UInt64"), sqltype::get("UInt64"), sqltype::get("UInt64"));
-    register_operator(o);
+    std::cerr << "Loading operators...";
 
-    o = op("*", sqltype::get("UInt64"), sqltype::get("UInt64"), sqltype::get("UInt64"));
-    register_operator(o);
-    
-    o = op("/", sqltype::get("UInt64"), sqltype::get("UInt64"), sqltype::get("UInt64"));
-    register_operator(o);
+    for (const auto& type : integerTypes) {
+        addOperators(numOps, type, type, type);
+        addOperators({"like"}, type, type, "UInt8");
+        addOperators({"not like"}, type, type, "UInt8");
+        addOperators({"ilike"}, type, type, "UInt8");
+    }
 
-	cerr << " done." << endl;
+    addOperators(stringOps, "String", "String", "UInt8");
+    
+    types.push_back(sqltype::get("String"));
+    types.push_back(sqltype::get("Array"));
+    for (const auto& type : integerTypes) {
+        types.push_back(sqltype::get(type));
+    }
+
+    std::cerr << " done." << std::endl;
+}
+
+void schema_clickhouse::addRoutine(
+    const std::string& name,
+    const std::string& resType,
+    const std::vector<std::string>& args)
+{
+    routine proc("", name, sqltype::get(resType), name);
+    register_routine(proc);
+
+    for (const auto& arg : args) {
+        routines.back().argtypes.push_back(sqltype::get(arg));
+    }
 }
 
 void schema_clickhouse::initRoutines() {
-    // cerr << "Loading routines...";
-	// // string routq("select s.name, f.id, a.type, f.name from sys.schemas s, sys.args a, sys.types t, sys.functions f where f.schema_id = s.id and f.id=a.func_id and a.number=0 and a.type = t.sqlname and f.mod<>'aggr'");
-	// // hdl = mapi_query(dbh,routq.c_str());
-	// // while (mapi_fetch_row(hdl)) {
-	// // 	routine proc(mapi_fetch_field(hdl,0),mapi_fetch_field(hdl,1),sqltype::get(mapi_fetch_field(hdl,2)),mapi_fetch_field(hdl,3));
-	// // 	register_routine(proc);
-	// // }
-	// // mapi_close_handle(hdl);
-	// routine proc("db", "RandomNumberSpec", sqltype::get("UInt64"), "RandomNumber");
-	// register_routine(proc);
+    std::cerr << "Loading routines...";
 
-    // proc = routine("db", "AbsSpec", sqltype::get("UInt64"), "Abs");
-	// register_routine(proc);
-    
-    // cerr << " done." << endl;
-    // cerr << "Loading routine parameters...";
-	// // for (auto &proc : routines) {
-	// // 	string routpq ("select a.type from sys.args a,"
-	// // 		       " sys.functions f "
-	// // 		       " where f.id = a.func_id and a.number <> 0 and f.id = '");
-	// // 	routpq += proc.specific_name;
-	// // 	routpq += "'";
-	// // 	hdl = mapi_query(dbh,routpq.c_str());
-	// // 	while (mapi_fetch_row(hdl)) {
-	// // 		proc.argtypes.push_back(sqltype::get(mapi_fetch_field(hdl,0)));
-	// // 	}
-	// // 	mapi_close_handle(hdl);
-	// // }
+    for (const auto& type : integerTypes) {
+        addRoutine("plus", type, {type, type});
+        addRoutine("minus", type, {type, type});
+        addRoutine("multiply", type, {type, type});
+        addRoutine("divide", type, {type, type});
+        addRoutine("intDiv", type, {type, type});
+        addRoutine("intDivOrZero", type, {type, type});
+        addRoutine("modulo", type, {type, type});
+        addRoutine("moduloOrZero", type, {type, type});
+        addRoutine("negate", type, {type});
+        addRoutine("abs", type, {type});
+        addRoutine("gcd", type, {type, type});
+        addRoutine("lcm", type, {type, type});
+    }
 
-    // routines[0].argtypes.push_back(sqltype::get("UInt64"));
-    // routines[1].argtypes.push_back(sqltype::get("UInt64"));
+    addRoutine("empty", "UInt8", {"String"});
+    addRoutine("length", "UInt64", {"String"});
+    addRoutine("lower", "String", {"String"});
+    addRoutine("upper", "String", {"String"});
+    addRoutine("reverse", "String", {"String"});
+    addRoutine("concat", "String", {"String", "String"});
+    addRoutine("position", "UInt64", {"String", "String"});
+    addRoutine("positionCaseInsensitive", "UInt64", {"String", "String"});
+    addRoutine("match", "UInt8", {"String", "String"});
 
-	cerr << " done."<< endl;
+    std::cerr << " done."<< std::endl;
 }
 
-void schema_clickhouse::initAggregates() {
-    cerr << "Loading aggregates...";
-	// string aggq("select s.name, f.id, a.type, f.name from sys.schemas s, sys.args a, sys.types t, sys.functions f where f.schema_id = s.id and f.id=a.func_id and a.number=0 and a.type = t.sqlname and f.mod='aggr'");
+void schema_clickhouse::initAggregates() {}
 
-	// hdl = mapi_query(dbh,aggq.c_str());
-	// while (mapi_fetch_row(hdl)) {
-	// 	routine proc(mapi_fetch_field(hdl,0),mapi_fetch_field(hdl,1),sqltype::get(mapi_fetch_field(hdl,2)),mapi_fetch_field(hdl,3));
-	// 	register_aggregate(proc);
-	// }
-	// mapi_close_handle(hdl);
-	cerr << " done." << endl;
+void schema_clickhouse::printInfo() {
+    std::cerr << "print loaded information to check correctness" << std::endl;
+    std::cerr << "Loaded tables.... " << std::endl;
+      for (auto item : tables) {
+        std::cerr << item.name << "; " << item.schema << "; " << item.is_insertable << "; " << item.is_base_table << std::endl;
+      }
 
-	cerr << "Loading aggregates parameters...";
-	// for (auto &proc: aggregates) {
-	// 	string aggpq ("select a.type from sys.args a, sys.functions f "
-	// 		      "where f.id = a.func_id and a.number <> 0 and f.id = '");
-	// 	aggpq += proc.specific_name;
-	// 	aggpq += "'";
-	// 	hdl = mapi_query(dbh,aggpq.c_str());
-	// 	while (mapi_fetch_row(hdl)) {
-	// 		proc.argtypes.push_back(sqltype::get(mapi_fetch_field(hdl,0)));
-	// 	}
-	// 	mapi_close_handle(hdl);
-	// }
-	cerr << " done."<< endl;
+    std::cerr << "Loaded columns... " << std::endl;
+      for (auto tab : tables) {
+        for (auto col: tab.columns())
+            std::cerr << tab.name << "; " << col.name << "; "<<col.type->name << std::endl;
+    }
 
-	// mapi_destroy(dbh);
-	// generate_indexes();
+    std::cerr << "Loaded aggregates and parameters... " << std::endl;
+     for (auto &proc : aggregates) {
+        std::cerr << proc.specific_name << "; " << proc.schema << "; " << proc.name <<"; " << proc.restype->name ;
+        for (auto item : proc.argtypes)
+            std::cerr << "; " << item->name;
+        std::cerr << std::endl;
+     }
 }
 
 //load schema from MonetDB
@@ -196,25 +236,9 @@ schema_clickhouse::schema_clickhouse(const std::string& info) : clickhouse_conne
     initRoutines();
     initAggregates();
 
-	cerr << "print loaded information to check correctness" << endl;
-	cerr << "Loaded tables.... " << endl;
-  	for (auto item : tables) {
-		cerr << item.name << "; " << item.schema << "; " << item.is_insertable << "; " << item.is_base_table << endl;
-  	}
+    generate_indexes();
 
-	cerr << "Loaded columns... " << endl;
-  	for (auto tab : tables) {
-		for (auto col: tab.columns())
-			cerr << tab.name << "; " << col.name << "; "<<col.type->name << endl;
-	}
-
-	cerr << "Loaded aggregates and parameters... " << endl;
- 	for (auto &proc : aggregates) {
-		cerr << proc.specific_name << "; " << proc.schema << "; " << proc.name <<"; " << proc.restype->name ;
-		for (auto item : proc.argtypes)
-			cerr << "; " << item->name;
-		cerr << endl;
- 	}
+    printInfo();
 }
 
 dut_clickhouse::dut_clickhouse(const std::string& info) : clickhouse_connection(info) {}
